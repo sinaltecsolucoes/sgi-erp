@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use App\Services\ApiExternaService;
+use Yajra\DataTables\Facades\DataTables;
 
 class EntidadeController extends Controller
 {
@@ -33,11 +34,31 @@ class EntidadeController extends Controller
     }
 
     /**
-     * Display a listing of the resource.
+     * Define o título e a descrição da página de listagem e retorna a view index.
+     * Esta é a lógica de lista_entidades.php (Parte PHP).
      */
-    public function index()
+    public function index(Request $request)
     {
-        //
+        $pageType = $request->route()->defaults['pageType'] ?? 'entidade';
+
+        $titulos = [
+            'cliente' => 'Clientes',
+            'fornecedor' => 'Fornecedores',
+            'entidade' => 'Todas as Entidades',
+        ];
+        $subtitulos = [
+            'cliente' => 'Gerencie todos os clientes.',
+            'fornecedor' => 'Gerencie todos os fornecedores.',
+            'entidade' => 'Gerencie todos os cadastros base.',
+        ];
+
+        // Passa as variáveis para a view Blade
+        return view('entidades.index', [
+            'pageType' => $pageType,
+            'titulo' => $titulos[$pageType] ?? 'Entidades',
+            'subtitulo' => $subtitulos[$pageType] ?? 'Gerencie todos os registros.',
+            'singular' => ucfirst($pageType) // Ex: Cliente
+        ]);
     }
 
     /**
@@ -135,6 +156,67 @@ class EntidadeController extends Controller
     public function show(Entidade $entidade)
     {
         //
+    }
+
+    /**
+     * Endpoint AJAX para o DataTables (usa o Yajra DataTables).
+     * Mapeia a lógica principal de EntidadeRepository::findAllForDataTable.
+     */
+    public function dataTable(Request $request, string $pageType)
+    {
+        // 1. Inicia a Query
+        $query = Entidade::select([
+            'entidades.id',
+            'cnpj_cpf',
+            'razao_social',
+            'nome_fantasia',
+            'tipo_entidade_papel',
+            'ativo',
+            // Coalesce para ordenar por Nome Fantasia, se existir, senão Razão Social
+            DB::raw('COALESCE(NULLIF(nome_fantasia, ""), razao_social) as nome_display'),
+        ]);
+
+        // 2. Aplica Filtros de Módulo (Tipo de Entidade)
+        if ($pageType === 'cliente') {
+            // Filtrar entidades que tenham vínculo com a tabela 'clientes'
+            $query->whereHas('cliente');
+        } elseif ($pageType === 'fornecedor') {
+            // Filtrar entidades que tenham vínculo com a tabela 'fornecedores'
+            $query->whereHas('fornecedor');
+        }
+        // NOTE: Se for 'transportadora', você precisaria de uma tabela 'transportadoras' e um whereHas similar.
+
+        // 3. Aplica Filtro de Situação (Como no seu PHP Puro)
+        $filtroSituacao = $request->input('filtro_situacao', 'Ativos'); // Padrão: Ativos
+        if ($filtroSituacao === 'Ativos') {
+            $query->where('ativo', true);
+        } elseif ($filtroSituacao === 'Inativos') {
+            $query->where('ativo', false);
+        }
+
+        // 4. Constrói a Resposta DataTables
+        return DataTables::eloquent($query)
+            ->orderColumn('nome_display', function ($query, $order) {
+                // Permite ordenação correta na coluna de nome display
+                $query->orderBy(DB::raw('COALESCE(NULLIF(nome_fantasia, ""), razao_social)'), $order);
+            })
+            ->addColumn('status', function (Entidade $entidade) {
+                // Coluna visual para a situação (ativo/inativo)
+                return $entidade->ativo
+                    ? '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Ativo</span>'
+                    : '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">Inativo</span>';
+            })
+            ->addColumn('actions', function (Entidade $entidade) use ($pageType) {
+                // Botões de Ação (Editar, Inativar, etc.)
+                $editUrl = route('entidades.edit', $entidade->id);
+                // A URL para o modal de inativação/ativação
+                $statusAction = $entidade->ativo ? 'Inativar' : 'Ativar';
+
+                return '<a href="' . $editUrl . '" class="text-indigo-600 hover:text-indigo-900 mr-2">Editar</a>' .
+                    '<button data-id="' . $entidade->id . '" data-action="' . $statusAction . '" class="status-btn text-sm text-red-600 hover:text-red-900">' . $statusAction . '</button>';
+            })
+            ->rawColumns(['status', 'actions']) // Diz ao DataTables para não escapar o HTML
+            ->make(true);
     }
 
     /**
